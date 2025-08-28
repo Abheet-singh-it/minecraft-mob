@@ -1,0 +1,163 @@
+# TPSBasedMobSpawner Configuration
+# This plugin increases mob spawning around players based on TPS
+
+settings:
+  # Minimum TPS required for mob spawning (default: 19)
+  min_tps: 19
+  
+  # Maximum mobs allowed per world (default: 100)
+  max_mobs_per_world: 100
+  
+  # Radius around players to spawn mobs (default: 50 blocks)
+  spawn_radius: 50
+  
+  # How often to check for spawning (in ticks, 20 = 1 second)
+  spawn_check_interval: 20
+  
+  # How often to check TPS (in ticks, 20 = 1 second)
+  tps_check_interval: 20
+  
+  # Enable LevelledMobs integration (default: true)
+  enable_levelledmobs: true
+  
+  # Prefix for LevelledMobs names (default: [Lv])
+  levelledmobs_prefix: "&7[&b&lLv&7]"
+
+# Worlds where mob spawning is disabled
+blacklisted_worlds:
+  - "world_nether"
+  - "world_the_end"
+  - "creative_world"
+  - "minigame_world"
+
+# List of mob types that are allowed to spawn
+allowed_mobs:
+  - "ZOMBIE"
+  - "SKELETON"
+  - "SPIDER"
+  - "CREEPER"
+  - "ENDERMAN"
+  - "WITCH"
+  - "SLIME"
+  - "CAVE_SPIDER"
+  - "SILVERFISH"
+  - "BLAZE"
+  - "MAGMA_CUBE"
+  - "GHAST"
+  - "PIGLIN"
+  - "HOGLIN"
+  - "ZOMBIFIED_PIGLIN"
+  - "DROWNED"
+  - "HUSK"
+  - "STRAY"
+  - "VINDICATOR"
+  - "PILLAGER"
+  - "RAVAGER"
+  - "EVOKER"
+  - "VEX"
+  - "PHANTOM"
+  - "GUARDIAN"
+  - "ELDER_GUARDIAN"
+  - "SHULKER"
+  - "ENDERMITE"
+  - "ENDER_DRAGON"
+  - "WITHER_SKELETON"
+  - "ZOMBIE_VILLAGER"
+  - "VILLAGER"
+  - "IRON_GOLEM"
+  - "SNOW_GOLEM"
+  - "WOLF"
+  - "CAT"
+  - "HORSE"
+  - "COW"
+  - "PIG"
+  - "SHEEP"
+  - "CHICKEN"
+  - "RABBIT"
+  - "FOX"
+  - "PANDA"
+  - "BEE"
+  - "DOLPHIN"
+  - "TURTLE"
+  - "FISH"
+  - "SQUID"
+  - "BAT"
+  - "OCELOT"
+  - "PARROT"
+  - "LLAMA"
+  - "TRADER_LLAMA"
+  - "WANDERING_TRADER"
+  - "POLAR_BEAR"
+  - "PANDA"
+  - "BEE"
+  - "DOLPHIN"
+  - "TURTLE"
+  - "FISH"
+  - "SQUID"
+  - "BAT"
+  - "OCELOT"
+  - "PARROT"
+  - "LLAMA"
+  - "TRADER_LLAMA"
+  - "WANDERING_TRADER"
+  - "POLAR_BEAR"
+
+# Mob spawn weights (higher numbers = more likely to spawn)
+# If not specified, all mobs have equal weight (1.0)
+mob_spawn_weights:
+  ZOMBIE: 2.0
+  SKELETON: 1.5
+  SPIDER: 1.8
+  CREEPER: 1.2
+  ENDERMAN: 0.8
+  WITCH: 0.6
+  SLIME: 1.3
+  CAVE_SPIDER: 1.4
+  SILVERFISH: 1.1
+  BLAZE: 0.7
+  MAGMA_CUBE: 0.9
+  GHAST: 0.5
+  PIGLIN: 1.6
+  HOGLIN: 1.2
+  ZOMBIFIED_PIGLIN: 1.4
+  DROWNED: 1.3
+  HUSK: 1.1
+  STRAY: 1.0
+  VINDICATOR: 0.8
+  PILLAGER: 1.2
+  RAVAGER: 0.6
+  EVOKER: 0.5
+  VEX: 0.7
+  PHANTOM: 0.9
+  GUARDIAN: 0.8
+  ELDER_GUARDIAN: 0.3
+  SHULKER: 0.6
+  ENDERMITE: 1.0
+  ENDER_DRAGON: 0.1
+  WITHER_SKELETON: 0.7
+  ZOMBIE_VILLAGER: 1.1
+  VILLAGER: 0.4
+  IRON_GOLEM: 0.3
+  SNOW_GOLEM: 0.2
+  WOLF: 0.8
+  CAT: 0.6
+  HORSE: 0.5
+  COW: 0.7
+  PIG: 0.8
+  SHEEP: 0.7
+  CHICKEN: 0.9
+  RABBIT: 1.0
+  FOX: 0.6
+  PANDA: 0.4
+  BEE: 0.8
+  DOLPHIN: 0.3
+  TURTLE: 0.5
+  FISH: 1.2
+  SQUID: 0.6
+  BAT: 1.1
+  OCELOT: 0.5
+  PARROT: 0.4
+  LLAMA: 0.6
+  TRADER_LLAMA: 0.3
+  WANDERING_TRADER: 0.2
+  POLAR_BEAR: 0.4

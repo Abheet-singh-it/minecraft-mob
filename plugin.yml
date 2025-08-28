@@ -1,0 +1,18 @@
+name: TPSBasedMobSpawner
+version: 1.0.0
+main: com.example.tpsmobspawner.TPSBasedMobSpawner
+api-version: 1.13
+description: A plugin that increases mob spawning around players based on TPS, with configurable blacklisted worlds and mob lists
+author: YourName
+website: https://github.com/yourusername/TPSBasedMobSpawner
+
+commands:
+  tpsmobspawner:
+    description: Main command for TPSBasedMobSpawner plugin
+    usage: /<command> [reload|tps|stats|spawn <mobtype>]
+    permission: tpsmobspawner.admin
+
+permissions:
+  tpsmobspawner.admin:
+    description: Allows access to all TPSMobSpawner commands
+    default: op
