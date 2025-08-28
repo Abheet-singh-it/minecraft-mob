@@ -11,6 +11,9 @@ settings:
   # Radius around players to spawn mobs (default: 50 blocks)
   spawn_radius: 50
   
+  # Minimum distance from players to spawn mobs (default: 20 blocks)
+  min_spawn_distance: 20
+  
   # How often to check for spawning (in ticks, 20 = 1 second)
   spawn_check_interval: 20
   
@@ -22,6 +25,15 @@ settings:
   
   # Prefix for LevelledMobs names (default: [Lv])
   levelledmobs_prefix: "&7[&b&lLv&7]"
+  
+  # Enable grief prevention land protection check (default: true)
+  enable_grief_prevention_check: true
+  
+  # Allow mobs to damage players (default: true)
+  allow_mob_damage: true
+  
+  # Allow mobs to target players (default: true)
+  allow_mob_targeting: true
 
 # Worlds where mob spawning is disabled
 blacklisted_worlds:

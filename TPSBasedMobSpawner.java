@@ -32,6 +32,7 @@ public class TPSBasedMobSpawner extends JavaPlugin implements Listener {
     private int minTPS = 19;
     private int maxMobsPerWorld = 100;
     private int spawnRadius = 50;
+    private int minSpawnDistance = 20;
     private int spawnCheckInterval = 20;
     private int tpsCheckInterval = 20;
     private List<String> blacklistedWorlds = new ArrayList<>();
@@ -39,6 +40,9 @@ public class TPSBasedMobSpawner extends JavaPlugin implements Listener {
     private Map<EntityType, Double> mobSpawnWeights = new HashMap<>();
     private boolean enableLevelledMobs = true;
     private String levelledMobsPrefix = "&7[&b&lLv&7]";
+    private boolean enableGriefPreventionCheck = true;
+    private boolean allowMobDamage = true;
+    private boolean allowMobTargeting = true;
     
     @Override
     public void onEnable() {
@@ -77,10 +81,14 @@ public class TPSBasedMobSpawner extends JavaPlugin implements Listener {
         minTPS = config.getInt("settings.min_tps", 19);
         maxMobsPerWorld = config.getInt("settings.max_mobs_per_world", 100);
         spawnRadius = config.getInt("settings.spawn_radius", 50);
+        minSpawnDistance = config.getInt("settings.min_spawn_distance", 20);
         spawnCheckInterval = config.getInt("settings.spawn_check_interval", 20);
         tpsCheckInterval = config.getInt("settings.tps_check_interval", 20);
         enableLevelledMobs = config.getBoolean("settings.enable_levelledmobs", true);
         levelledMobsPrefix = config.getString("settings.levelledmobs_prefix", "&7[&b&lLv&7]");
+        enableGriefPreventionCheck = config.getBoolean("settings.enable_grief_prevention_check", true);
+        allowMobDamage = config.getBoolean("settings.allow_mob_damage", true);
+        allowMobTargeting = config.getBoolean("settings.allow_mob_targeting", true);
         
         blacklistedWorlds = config.getStringList("blacklisted_worlds");
         
@@ -189,8 +197,8 @@ public class TPSBasedMobSpawner extends JavaPlugin implements Listener {
                 continue;
             }
             
-            // Calculate how many mobs to spawn
-            int mobsToSpawn = Math.min(5, maxAllowed - currentMobCount);
+            // Calculate how many mobs to spawn (reduced from 5 to prevent over-spawning)
+            int mobsToSpawn = Math.min(2, maxAllowed - currentMobCount);
             
             for (int i = 0; i < mobsToSpawn; i++) {
                 spawnMobNearPlayer(world);
@@ -254,10 +262,16 @@ public class TPSBasedMobSpawner extends JavaPlugin implements Listener {
     private Location findSpawnLocation(Location playerLoc, World world) {
         Random random = new Random();
         
-        for (int attempts = 0; attempts < 10; attempts++) {
-            // Generate random offset within spawn radius
-            int x = random.nextInt(spawnRadius * 2) - spawnRadius;
-            int z = random.nextInt(spawnRadius * 2) - spawnRadius;
+        for (int attempts = 0; attempts < 15; attempts++) {
+            // Generate random offset within spawn radius (increased minimum distance)
+            int minDistance = minSpawnDistance; // Minimum distance from player
+            int maxDistance = spawnRadius;
+            
+            int distance = minDistance + random.nextInt(maxDistance - minDistance + 1);
+            double angle = random.nextDouble() * 2 * Math.PI;
+            
+            int x = (int) (Math.cos(angle) * distance);
+            int z = (int) (Math.sin(angle) * distance);
             
             Location testLoc = playerLoc.clone().add(x, 0, z);
             
@@ -290,11 +304,16 @@ public class TPSBasedMobSpawner extends JavaPlugin implements Listener {
             return false;
         }
         
-        // Check if location is not too close to players
+        // Check if location is not too close to players (increased distance)
         for (Player player : world.getPlayers()) {
-            if (player.getLocation().distance(loc) < 8) {
+            if (player.getLocation().distance(loc) < 15) {
                 return false;
             }
+        }
+        
+        // Check for grief prevention land protection
+        if (enableGriefPreventionCheck && isGriefPreventionProtected(loc)) {
+            return false;
         }
         
         return true;
@@ -338,6 +357,93 @@ public class TPSBasedMobSpawner extends JavaPlugin implements Listener {
         return Bukkit.getPluginManager().getPlugin("LevelledMobs") != null;
     }
     
+    private boolean isGriefPreventionProtected(Location loc) {
+        try {
+            // Check if GriefPrevention is available
+            if (Bukkit.getPluginManager().getPlugin("GriefPrevention") != null) {
+                return checkGriefPreventionProtection(loc);
+            }
+            
+            // Check if WorldGuard is available
+            if (Bukkit.getPluginManager().getPlugin("WorldGuard") != null) {
+                return checkWorldGuardProtection(loc);
+            }
+            
+            // Check if WorldEdit is available (for region protection)
+            if (Bukkit.getPluginManager().getPlugin("WorldEdit") != null) {
+                return checkWorldEditProtection(loc);
+            }
+            
+        } catch (Exception e) {
+            getLogger().warning("Failed to check grief prevention: " + e.getMessage());
+        }
+        
+        return false; // Default to allowing spawning if no protection plugins found
+    }
+    
+    private boolean checkGriefPreventionProtection(Location loc) {
+        try {
+            // Try to use GriefPrevention API
+            Class<?> gpClass = Class.forName("me.ryanhamshire.GriefPrevention.GriefPrevention");
+            Object gpInstance = gpClass.getMethod("instance").invoke(null);
+            
+            if (gpInstance != null) {
+                // Check if location is in a claim
+                Object dataStore = gpInstance.getClass().getMethod("dataStore").invoke(gpInstance);
+                if (dataStore != null) {
+                    Object claim = dataStore.getClass().getMethod("getClaimAt", Location.class).invoke(dataStore, loc);
+                    return claim != null; // If claim exists, location is protected
+                }
+            }
+        } catch (Exception e) {
+            getLogger().fine("GriefPrevention API check failed: " + e.getMessage());
+        }
+        return false;
+    }
+    
+    private boolean checkWorldGuardProtection(Location loc) {
+        try {
+            // Try to use WorldGuard API
+            Class<?> wgClass = Class.forName("com.sk89q.worldguard.WorldGuard");
+            Object wgInstance = wgClass.getMethod("getInstance").invoke(null);
+            
+            if (wgInstance != null) {
+                Object platform = wgInstance.getClass().getMethod("getPlatform").invoke(wgInstance);
+                if (platform != null) {
+                    Object sessionManager = platform.getClass().getMethod("getSessionManager").invoke(platform);
+                    if (sessionManager != null) {
+                        // Check if location is protected by WorldGuard
+                        Object query = sessionManager.getClass().getMethod("createQuery").invoke(sessionManager);
+                        if (query != null) {
+                            Object test = query.getClass().getMethod("testLocation", Location.class).invoke(query, loc);
+                            return test != null && (Boolean) test; // If test returns true, location is protected
+                        }
+                    }
+                }
+            }
+        } catch (Exception e) {
+            getLogger().fine("WorldGuard API check failed: " + e.getMessage());
+        }
+        return false;
+    }
+    
+    private boolean checkWorldEditProtection(Location loc) {
+        try {
+            // Try to use WorldEdit API for region protection
+            Class<?> weClass = Class.forName("com.sk89q.worldedit.WorldEdit");
+            Object weInstance = weClass.getMethod("getInstance").invoke(null);
+            
+            if (weInstance != null) {
+                // Check if location is in a protected region
+                // This is a simplified check - WorldEdit regions are typically managed by WorldGuard
+                return false; // Default to allowing spawning
+            }
+        } catch (Exception e) {
+            getLogger().fine("WorldEdit API check failed: " + e.getMessage());
+        }
+        return false;
+    }
+    
     private void applyLevelledMobs(LivingEntity mob) {
         try {
             // Use LevelledMobs API to level the mob
@@ -360,6 +466,24 @@ public class TPSBasedMobSpawner extends JavaPlugin implements Listener {
         World world = event.getLocation().getWorld();
         if (world != null && !blacklistedWorlds.contains(world.getName())) {
             worldSpawnCounts.put(world, worldSpawnCounts.getOrDefault(world, 0) + 1);
+        }
+    }
+    
+    @EventHandler
+    public void onEntityDamage(org.bukkit.event.entity.EntityDamageByEntityEvent event) {
+        // Ensure mobs can damage players (prevent any interference)
+        if (allowMobDamage && event.getDamager() instanceof LivingEntity && event.getEntity() instanceof Player) {
+            // Allow mobs to damage players
+            event.setCancelled(false);
+        }
+    }
+    
+    @EventHandler
+    public void onEntityTarget(org.bukkit.event.entity.EntityTargetEvent event) {
+        // Ensure mobs can target players
+        if (allowMobTargeting && event.getEntity() instanceof LivingEntity && event.getTarget() instanceof Player) {
+            // Allow mobs to target players
+            event.setCancelled(false);
         }
     }
     

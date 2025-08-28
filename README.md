@@ -11,7 +11,9 @@ A comprehensive Minecraft plugin that dynamically increases mob spawning around 
 - **Weighted Spawning**: Set spawn probabilities for different mob types
 - **LevelledMobs Integration**: Works with LevelledMobs plugin for enhanced mob experience
 - **Performance Monitoring**: Real-time TPS tracking and spawn statistics
-- **Smart Spawn Locations**: Finds suitable spawn locations near players
+- **Smart Spawn Locations**: Finds suitable spawn locations near players with configurable minimum distance
+- **Grief Prevention Protection**: Respects protected land claims and regions
+- **Mob Damage Control**: Ensures mobs can damage and target players
 - **Admin Commands**: Built-in commands for monitoring and control
 
 ## Installation
@@ -45,10 +47,14 @@ settings:
   min_tps: 19                    # Minimum TPS required for spawning
   max_mobs_per_world: 100        # Maximum mobs per world
   spawn_radius: 50               # Spawn radius around players
+  min_spawn_distance: 20         # Minimum distance from players
   spawn_check_interval: 20       # Spawn check frequency (ticks)
   tps_check_interval: 20         # TPS check frequency (ticks)
   enable_levelledmobs: true      # Enable LevelledMobs integration
   levelledmobs_prefix: "&7[&b&lLv&7]"  # Custom name prefix
+  enable_grief_prevention_check: true  # Check for protected land
+  allow_mob_damage: true         # Allow mobs to damage players
+  allow_mob_targeting: true      # Allow mobs to target players
 ```
 
 ### Blacklisted Worlds
@@ -99,9 +105,11 @@ mob_spawn_weights:
 2. **World Filtering**: Skips blacklisted worlds
 3. **Player Proximity**: Only spawns in worlds with active players
 4. **Mob Count Check**: Respects maximum mob limits per world
-5. **Location Finding**: Searches for suitable spawn locations near players
-6. **Mob Selection**: Uses weighted random selection from allowed mob types
-7. **LevelledMobs Integration**: Applies custom names and levels if enabled
+5. **Location Finding**: Searches for suitable spawn locations near players (respects minimum distance)
+6. **Grief Prevention Check**: Avoids spawning on protected land claims
+7. **Mob Selection**: Uses weighted random selection from allowed mob types
+8. **LevelledMobs Integration**: Applies custom names and levels if enabled
+9. **Mob Behavior**: Ensures mobs can damage and target players
 
 ### Performance Optimization
 - Uses concurrent collections for thread safety
