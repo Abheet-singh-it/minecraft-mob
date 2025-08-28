@@ -34,6 +34,9 @@ settings:
   
   # Allow mobs to target players (default: true)
   allow_mob_targeting: true
+  
+  # Enable base protection to prevent mob spawning near player structures (default: true)
+  enable_base_protection: true
 
 # Worlds where mob spawning is disabled
 blacklisted_worlds:

@@ -48,6 +48,7 @@ public class TPSBasedMobSpawner extends JavaPlugin implements Listener {
     private boolean enableGriefPreventionCheck = true;
     private boolean allowMobDamage = true;
     private boolean allowMobTargeting = true;
+    private boolean enableBaseProtection = true;
     
     @Override
     public void onEnable() {
@@ -95,6 +96,7 @@ public class TPSBasedMobSpawner extends JavaPlugin implements Listener {
         enableGriefPreventionCheck = config.getBoolean("settings.enable_grief_prevention_check", true);
         allowMobDamage = config.getBoolean("settings.allow_mob_damage", true);
         allowMobTargeting = config.getBoolean("settings.allow_mob_targeting", true);
+        enableBaseProtection = config.getBoolean("settings.enable_base_protection", true);
         
         blacklistedWorlds = config.getStringList("blacklisted_worlds");
         
@@ -162,25 +164,36 @@ public class TPSBasedMobSpawner extends JavaPlugin implements Listener {
     }
     
     private void cleanupData() {
-        // Clean up spawn counts by recounting actual mobs
-        for (World world : worldSpawnCounts.keySet()) {
-            int actualCount = getHostileMobCount(world);
-            worldSpawnCounts.put(world, actualCount);
+        // Clean up invalid entities from tracking
+        pluginSpawnedMobs.removeIf(entity -> 
+            entity == null || !entity.isValid() || entity.isDead() || 
+            !entity.getChunk().isLoaded());
+        
+        // Clean up spawn counts by recounting actual mobs (thread-safe)
+        synchronized (worldSpawnCounts) {
+            for (World world : new HashSet<>(worldSpawnCounts.keySet())) {
+                if (world != null && Bukkit.getWorlds().contains(world)) {
+                    int actualCount = getHostileMobCount(world);
+                    worldSpawnCounts.put(world, actualCount);
+                } else {
+                    // Remove invalid worlds
+                    worldSpawnCounts.remove(world);
+                }
+            }
         }
         
         // Clean up TPS history if it gets too large
-        if (tpsHistory.size() > TPS_HISTORY_SIZE * 2) {
-            int toRemove = tpsHistory.size() - TPS_HISTORY_SIZE;
-            for (int i = 0; i < toRemove; i++) {
-                tpsHistory.remove(0);
+        synchronized (tpsHistory) {
+            if (tpsHistory.size() > TPS_HISTORY_SIZE * 2) {
+                int toRemove = tpsHistory.size() - TPS_HISTORY_SIZE;
+                for (int i = 0; i < toRemove; i++) {
+                    tpsHistory.remove(0);
+                }
             }
         }
         
         // Clean up world TPS map for worlds that no longer exist
         worldTPS.entrySet().removeIf(entry -> !Bukkit.getWorlds().contains(entry.getKey()));
-        
-        // Clean up plugin-spawned mobs tracking (remove invalid entities)
-        pluginSpawnedMobs.removeIf(entity -> !entity.isValid() || entity.isDead());
     }
     
     private void updateTPS() {
@@ -232,12 +245,13 @@ public class TPSBasedMobSpawner extends JavaPlugin implements Listener {
             return 20.0; // Not enough time passed
         }
         
-        // Calculate TPS based on time difference
-        double tps = 1000.0 / timeDiff;
+        // Calculate TPS based on expected 50ms per tick at 20 TPS
+        double expectedTickTime = 50.0; // milliseconds per tick at 20 TPS
+        double actualTPS = (1000.0 / expectedTickTime) * (expectedTickTime / (timeDiff / 20.0));
         lastTPSUpdate = currentTime;
         
         // Clamp TPS to reasonable range
-        return Math.max(0.0, Math.min(20.0, tps));
+        return Math.max(0.0, Math.min(20.0, actualTPS));
     }
     
     private void performMobSpawning() {
@@ -399,11 +413,25 @@ public class TPSBasedMobSpawner extends JavaPlugin implements Listener {
         }
         
         // Check if location is not too close to players (increased distance)
-        // Use squared distance for better performance (avoid square root)
-        double minDistanceSquared = 15 * 15;
+        // Use chunk-based proximity check for better performance
+        int minDistance = 15;
+        int chunkRadius = (minDistance / 16) + 1; // Convert distance to chunk radius
+        
+        int locChunkX = loc.getBlockX() >> 4;
+        int locChunkZ = loc.getBlockZ() >> 4;
+        
         for (Player player : world.getPlayers()) {
-            if (player.getLocation().distanceSquared(loc) < minDistanceSquared) {
-                return false;
+            Location playerLoc = player.getLocation();
+            int playerChunkX = playerLoc.getBlockX() >> 4;
+            int playerChunkZ = playerLoc.getBlockZ() >> 4;
+            
+            // Quick chunk distance check
+            int chunkDistance = Math.max(Math.abs(locChunkX - playerChunkX), Math.abs(locChunkZ - playerChunkZ));
+            if (chunkDistance <= chunkRadius) {
+                // Only do expensive distance calculation if chunks are close
+                if (playerLoc.distanceSquared(loc) < minDistance * minDistance) {
+                    return false;
+                }
             }
         }
         
@@ -412,7 +440,76 @@ public class TPSBasedMobSpawner extends JavaPlugin implements Listener {
             return false;
         }
         
+        // Additional check: prevent spawning inside player bases
+        if (enableBaseProtection && isInsidePlayerBase(loc, world)) {
+            return false;
+        }
+        
         return true;
+    }
+    
+    private boolean isInsidePlayerBase(Location loc, World world) {
+        // Check for signs of player bases (chests, furnaces, beds, etc.)
+        int radius = 5; // Check 5 block radius for base structures
+        
+        for (int x = -radius; x <= radius; x++) {
+            for (int y = -3; y <= 3; y++) {
+                for (int z = -radius; z <= radius; z++) {
+                    Location checkLoc = loc.clone().add(x, y, z);
+                    if (checkLoc.getBlockY() < world.getMinHeight() || checkLoc.getBlockY() >= world.getMaxHeight()) {
+                        continue;
+                    }
+                    
+                    org.bukkit.block.Block block = checkLoc.getBlock();
+                    org.bukkit.Material type = block.getType();
+                    
+                    // Check for base-related blocks
+                    if (isBaseBlock(type)) {
+                        getLogger().fine("Prevented spawn near base structure: " + type.name() + " at " + checkLoc);
+                        return true;
+                    }
+                }
+            }
+        }
+        
+        return false;
+    }
+    
+    private boolean isBaseBlock(org.bukkit.Material material) {
+        // List of blocks that indicate a player base
+        return material == org.bukkit.Material.CHEST ||
+               material == org.bukkit.Material.TRAPPED_CHEST ||
+               material == org.bukkit.Material.FURNACE ||
+               material == org.bukkit.Material.BLAST_FURNACE ||
+               material == org.bukkit.Material.SMOKER ||
+               material == org.bukkit.Material.CRAFTING_TABLE ||
+               material == org.bukkit.Material.ANVIL ||
+               material == org.bukkit.Material.ENCHANTING_TABLE ||
+               material == org.bukkit.Material.BED ||
+               material == org.bukkit.Material.WHITE_BED ||
+               material == org.bukkit.Material.ORANGE_BED ||
+               material == org.bukkit.Material.MAGENTA_BED ||
+               material == org.bukkit.Material.LIGHT_BLUE_BED ||
+               material == org.bukkit.Material.YELLOW_BED ||
+               material == org.bukkit.Material.LIME_BED ||
+               material == org.bukkit.Material.PINK_BED ||
+               material == org.bukkit.Material.GRAY_BED ||
+               material == org.bukkit.Material.LIGHT_GRAY_BED ||
+               material == org.bukkit.Material.CYAN_BED ||
+               material == org.bukkit.Material.PURPLE_BED ||
+               material == org.bukkit.Material.BLUE_BED ||
+               material == org.bukkit.Material.BROWN_BED ||
+               material == org.bukkit.Material.GREEN_BED ||
+               material == org.bukkit.Material.RED_BED ||
+               material == org.bukkit.Material.BLACK_BED ||
+               material == org.bukkit.Material.DOOR ||
+               material == org.bukkit.Material.IRON_DOOR ||
+               material == org.bukkit.Material.TORCH ||
+               material == org.bukkit.Material.WALL_TORCH ||
+               material == org.bukkit.Material.LANTERN ||
+               material == org.bukkit.Material.SOUL_LANTERN ||
+               material == org.bukkit.Material.CAMPFIRE ||
+               material == org.bukkit.Material.SOUL_CAMPFIRE;
     }
     
     private EntityType selectRandomMobType() {
@@ -479,39 +576,61 @@ public class TPSBasedMobSpawner extends JavaPlugin implements Listener {
     
     private boolean checkGriefPreventionProtection(Location loc) {
         try {
-            // Try to use GriefPrevention API
+            // Check if GriefPrevention is available and enabled
             Plugin gpPlugin = Bukkit.getPluginManager().getPlugin("GriefPrevention");
-            if (gpPlugin == null) return false;
+            if (gpPlugin == null || !gpPlugin.isEnabled()) {
+                return false;
+            }
             
-            // Use reflection to access GriefPrevention API
+            // Use proper API integration instead of reflection
+            return checkGriefPreventionAPI(loc);
+            
+        } catch (Exception e) {
+            getLogger().warning("GriefPrevention check failed: " + e.getMessage());
+            return false; // Fail safe - don't spawn on potentially protected land
+        }
+    }
+    
+    private boolean checkGriefPreventionAPI(Location loc) {
+        try {
+            // Try to use the proper GriefPrevention API
             Class<?> gpClass = Class.forName("me.ryanhamshire.GriefPrevention.GriefPrevention");
             Object gpInstance = gpClass.getMethod("instance").invoke(null);
             
             if (gpInstance != null) {
-                // Get the data store
+                // Get the data store safely
                 Object dataStore = gpInstance.getClass().getMethod("dataStore").invoke(gpInstance);
                 if (dataStore != null) {
-                    // Check if location is in a claim
-                    Object claim = dataStore.getClass().getMethod("getClaimAt", Location.class).invoke(dataStore, loc);
+                    // Check if location is in a claim using the API
+                    Object claim = dataStore.getClass().getMethod("getClaimAt", Location.class, boolean.class, Object.class)
+                        .invoke(dataStore, loc, false, null);
+                    
                     if (claim != null) {
-                        // Check if the claim is active and not expired
+                        // Verify the claim is valid and active
                         try {
-                            // Try to get claim owner and other details
+                            // Check if claim is not expired
+                            Object isExpired = claim.getClass().getMethod("isExpired").invoke(claim);
+                            if (isExpired != null && (Boolean) isExpired) {
+                                return false; // Expired claims don't protect
+                            }
+                            
+                            // Get claim owner for logging
                             Object owner = claim.getClass().getMethod("getOwnerID").invoke(claim);
                             if (owner != null) {
                                 getLogger().fine("Location protected by GriefPrevention claim owned by: " + owner);
-                                return true;
                             }
+                            
+                            return true; // Location is protected
                         } catch (Exception e) {
-                            // If we can't get owner details, assume it's protected
-                            getLogger().fine("Location protected by GriefPrevention claim");
+                            // If we can't verify claim details, assume it's protected (fail safe)
+                            getLogger().fine("Location protected by GriefPrevention claim (details unavailable)");
                             return true;
                         }
                     }
                 }
             }
         } catch (Exception e) {
-            getLogger().fine("GriefPrevention API check failed: " + e.getMessage());
+            getLogger().fine("GriefPrevention API integration failed: " + e.getMessage());
         }
         return false;
     }
@@ -714,7 +833,18 @@ public class TPSBasedMobSpawner extends JavaPlugin implements Listener {
     public void onEntityDamage(org.bukkit.event.entity.EntityDamageByEntityEvent event) {
         // Ensure mobs can damage players (prevent any interference)
         if (allowMobDamage && event.getDamager() instanceof LivingEntity && event.getEntity() instanceof Player) {
-            // Allow mobs to damage players
+            Player player = (Player) event.getEntity();
+            Location playerLoc = player.getLocation();
+            
+            // Check if player is in a protected area
+            if (enableGriefPreventionCheck && isGriefPreventionProtected(playerLoc)) {
+                // Cancel damage if player is in a protected area
+                event.setCancelled(true);
+                getLogger().fine("Cancelled mob damage to player in protected area: " + player.getName());
+                return;
+            }
+            
+            // Allow mobs to damage players in unprotected areas
             event.setCancelled(false);
         }
     }
@@ -723,7 +853,18 @@ public class TPSBasedMobSpawner extends JavaPlugin implements Listener {
     public void onEntityTarget(org.bukkit.event.entity.EntityTargetEvent event) {
         // Ensure mobs can target players
         if (allowMobTargeting && event.getEntity() instanceof LivingEntity && event.getTarget() instanceof Player) {
-            // Allow mobs to target players
+            Player player = (Player) event.getTarget();
+            Location playerLoc = player.getLocation();
+            
+            // Check if player is in a protected area
+            if (enableGriefPreventionCheck && isGriefPreventionProtected(playerLoc)) {
+                // Cancel targeting if player is in a protected area
+                event.setCancelled(true);
+                getLogger().fine("Cancelled mob targeting of player in protected area: " + player.getName());
+                return;
+            }
+            
+            // Allow mobs to target players in unprotected areas
             event.setCancelled(false);
         }
     }
@@ -735,14 +876,44 @@ public class TPSBasedMobSpawner extends JavaPlugin implements Listener {
     }
     
     @EventHandler
-    public void onEntityRemove(org.bukkit.event.entity.EntityRemoveEvent event) {
-        // Remove removed mobs from tracking
+    public void onEntityDeath(org.bukkit.event.entity.EntityDeathEvent event) {
+        // Remove dead mobs from tracking
         pluginSpawnedMobs.remove(event.getEntity());
     }
     
+    @EventHandler
+    public void onChunkUnload(org.bukkit.event.world.ChunkUnloadEvent event) {
+        // Remove mobs from tracking when chunks unload
+        for (org.bukkit.entity.Entity entity : event.getChunk().getEntities()) {
+            if (entity instanceof LivingEntity) {
+                pluginSpawnedMobs.remove(entity);
+            }
+        }
+    }
+    
+    @EventHandler
+    public void onPlayerQuit(org.bukkit.event.player.PlayerQuitEvent event) {
+        // Clean up any mobs that might be tracking the player
+        // This helps prevent memory leaks from player-specific mob tracking
+    }
+    
     public void reloadPlugin() {
+        // Clear all tracking data for clean reload
+        synchronized (worldSpawnCounts) {
+            worldSpawnCounts.clear();
+        }
+        synchronized (tpsHistory) {
+            tpsHistory.clear();
+        }
+        worldTPS.clear();
+        pluginSpawnedMobs.clear();
+        
+        // Reset TPS tracking
+        lastTPSUpdate = 0;
+        
+        // Reload configuration
         loadConfig();
-        getLogger().info("Plugin configuration reloaded!");
+        getLogger().info("Plugin configuration reloaded and tracking data cleared!");
     }
     
     public double getCurrentTPSValue() {

@@ -58,6 +58,7 @@ settings:
   enable_grief_prevention_check: true  # Check for protected land
   allow_mob_damage: true         # Allow mobs to damage players
   allow_mob_targeting: true      # Allow mobs to target players
+  enable_base_protection: true   # Prevent spawning near player bases
 ```
 
 ### Blacklisted Worlds
@@ -159,7 +160,15 @@ The plugin provides comprehensive protection against spawning mobs on protected 
 - **Claim Detection**: Automatically detects GriefPrevention claims
 - **Owner Verification**: Validates claim ownership and status
 - **Region Protection**: Respects WorldGuard protected regions
+- **Base Protection**: Prevents spawning near player structures
+- **Player Safety**: Mobs cannot damage players in protected areas
 - **Configurable**: Can be enabled/disabled via configuration
+
+### **Base Protection System**
+- **Structure Detection**: Identifies player bases by checking for base-related blocks
+- **Safe Distance**: Maintains minimum distance from chests, furnaces, beds, etc.
+- **Performance Optimized**: Uses efficient chunk-based proximity checks
+- **Configurable Radius**: 5-block radius protection around base structures
 
 ### **Configuration Options**
 ```yaml
