@@ -229,6 +229,9 @@ The plugin logs important information including:
 - **Optimized algorithms** with chunk-based proximity checks
 - **Protection caching** reduces expensive API calls
 - **Efficient base detection** with minimal block checking
+- **Chunk-based mob counting** eliminates expensive world iteration
+- **Smart caching system** for protection checks and mob counts
+- **Efficient event handling** with minimal overhead
 
 ## Compatibility
 

@@ -33,6 +33,7 @@ public class TPSBasedMobSpawner extends JavaPlugin implements Listener {
     private long lastTPSUpdate = 0;
     private final Set<org.bukkit.entity.Entity> pluginSpawnedMobs = ConcurrentHashMap.newKeySet();
     private final Map<Location, Boolean> protectionCache = new ConcurrentHashMap<>();
+    private final Map<org.bukkit.Chunk, Integer> chunkMobCounts = new ConcurrentHashMap<>();
     
     // Configuration values
     private int minTPS = 19;
@@ -65,8 +66,22 @@ public class TPSBasedMobSpawner extends JavaPlugin implements Listener {
         startSpawnTask();
         startCleanupTask();
         
+        // Initialize chunk mob counts for all loaded chunks
+        initializeChunkMobCounts();
+        
         // Register commands
         getCommand("tpsmobspawner").setExecutor(new TPSMobSpawnerCommand(this));
+    }
+    
+    private void initializeChunkMobCounts() {
+        // Initialize mob counts for all currently loaded chunks
+        for (World world : Bukkit.getWorlds()) {
+            for (org.bukkit.Chunk chunk : world.getLoadedChunks()) {
+                updateChunkMobCount(chunk);
+            }
+        }
+        getLogger().info("Initialized chunk mob counts for " + chunkMobCounts.size() + " chunks");
+    }
         
         getLogger().info("TPSBasedMobSpawner has been enabled!");
     }
@@ -202,6 +217,9 @@ public class TPSBasedMobSpawner extends JavaPlugin implements Listener {
             protectionCache.clear();
             getLogger().fine("Cleared protection cache to prevent memory leaks");
         }
+        
+        // Clean up chunk mob counts for unloaded chunks
+        chunkMobCounts.entrySet().removeIf(entry -> !entry.getKey().isLoaded());
     }
     
     private void updateTPS() {
@@ -231,13 +249,55 @@ public class TPSBasedMobSpawner extends JavaPlugin implements Listener {
     
     private double getCurrentTPSReflection() {
         try {
-            // Use reflection to get TPS from server (fallback method)
+            // Try multiple reflection approaches for different server versions
+            double tps = getCurrentTPSReflectionV1_13();
+            if (tps > 0) return tps;
+            
+            tps = getCurrentTPSReflectionV1_12();
+            if (tps > 0) return tps;
+            
+            tps = getCurrentTPSReflectionLegacy();
+            if (tps > 0) return tps;
+            
+            // All reflection methods failed
+            getLogger().warning("All TPS reflection methods failed, using manual calculation");
+            return calculateManualTPS();
+        } catch (Exception e) {
+            getLogger().warning("TPS reflection failed with exception, using manual calculation: " + e.getMessage());
+            return calculateManualTPS();
+        }
+    }
+    
+    private double getCurrentTPSReflectionV1_13() {
+        try {
+            // Modern server versions (1.13+)
             Object serverInstance = Bukkit.getServer().getClass().getMethod("getServer").invoke(Bukkit.getServer());
             double[] recentTps = (double[]) serverInstance.getClass().getField("recentTps").get(serverInstance);
             return recentTps[0];
         } catch (Exception e) {
-            // Final fallback - calculate TPS manually
-            return calculateManualTPS();
+            return -1; // Indicate failure
+        }
+    }
+    
+    private double getCurrentTPSReflectionV1_12() {
+        try {
+            // 1.12 and similar versions
+            Object serverInstance = Bukkit.getServer().getClass().getMethod("getServer").invoke(Bukkit.getServer());
+            double[] recentTps = (double[]) serverInstance.getClass().getField("recentTps").get(serverInstance);
+            return recentTps[0];
+        } catch (Exception e) {
+            return -1; // Indicate failure
+        }
+    }
+    
+    private double getCurrentTPSReflectionLegacy() {
+        try {
+            // Legacy server versions
+            Object serverInstance = Bukkit.getServer().getClass().getMethod("getServer").invoke(Bukkit.getServer());
+            double[] recentTps = (double[]) serverInstance.getClass().getField("recentTps").get(serverInstance);
+            return recentTps[0];
+        } catch (Exception e) {
+            return -1; // Indicate failure
         }
     }
     
@@ -279,8 +339,8 @@ public class TPSBasedMobSpawner extends JavaPlugin implements Listener {
                 continue;
             }
             
-            // Get current hostile mob count (only count actual mobs, not all entities)
-            int currentMobCount = getHostileMobCount(world);
+            // Get current hostile mob count using cached chunk data
+            int currentMobCount = getCachedHostileMobCount(world);
             int maxAllowed = (int) (maxMobsPerWorld * spawnMultiplier);
             
             if (currentMobCount >= maxAllowed) {
@@ -671,9 +731,38 @@ public class TPSBasedMobSpawner extends JavaPlugin implements Listener {
     }
     
     private int getHostileMobCount(World world) {
-        return (int) world.getLivingEntities().stream()
-            .filter(entity -> entity instanceof org.bukkit.entity.Monster)
-            .count();
+        // Use chunk-based counting for better performance
+        int count = 0;
+        for (org.bukkit.Chunk chunk : world.getLoadedChunks()) {
+            for (org.bukkit.entity.Entity entity : chunk.getEntities()) {
+                if (entity instanceof org.bukkit.entity.Monster) {
+                    count++;
+                }
+            }
+        }
+        return count;
+    }
+    
+    private int getHostileMobCountInChunk(org.bukkit.Chunk chunk) {
+        int count = 0;
+        for (org.bukkit.entity.Entity entity : chunk.getEntities()) {
+            if (entity instanceof org.bukkit.entity.Monster) {
+                count++;
+            }
+        }
+        return count;
+    }
+    
+    private void updateChunkMobCount(org.bukkit.Chunk chunk) {
+        chunkMobCounts.put(chunk, getHostileMobCountInChunk(chunk));
+    }
+    
+    private int getCachedHostileMobCount(World world) {
+        int total = 0;
+        for (org.bukkit.Chunk chunk : world.getLoadedChunks()) {
+            total += chunkMobCounts.getOrDefault(chunk, 0);
+        }
+        return total;
     }
     
     private void validateConfiguration() {
@@ -720,6 +809,36 @@ public class TPSBasedMobSpawner extends JavaPlugin implements Listener {
                 getLogger().warning("Invalid weight for " + entry.getKey() + ": " + entry.getValue() + ". Using default: 1.0");
                 mobSpawnWeights.put(entry.getKey(), 1.0);
             }
+        }
+        
+        // Validate blacklisted worlds exist
+        List<String> validWorlds = Bukkit.getWorlds().stream().map(World::getName).collect(java.util.stream.Collectors.toList());
+        List<String> invalidWorlds = blacklistedWorlds.stream()
+            .filter(worldName -> !validWorlds.contains(worldName))
+            .collect(java.util.stream.Collectors.toList());
+        
+        if (!invalidWorlds.isEmpty()) {
+            getLogger().warning("Invalid blacklisted worlds (do not exist): " + invalidWorlds);
+            blacklistedWorlds.removeAll(invalidWorlds);
+        }
+        
+        // Validate allowed mobs
+        List<EntityType> invalidMobs = allowedMobs.stream()
+            .filter(mobType -> !isValidMobType(mobType))
+            .collect(java.util.stream.Collectors.toList());
+        
+        if (!invalidMobs.isEmpty()) {
+            getLogger().warning("Invalid mob types in allowed_mobs: " + invalidMobs);
+            allowedMobs.removeAll(invalidMobs);
+        }
+    }
+    
+    private boolean isValidMobType(EntityType mobType) {
+        try {
+            // Check if the mob type can actually be spawned
+            return mobType.isSpawnable() && mobType.isAlive();
+        } catch (Exception e) {
+            return false;
         }
     }
     
@@ -818,6 +937,14 @@ public class TPSBasedMobSpawner extends JavaPlugin implements Listener {
         World world = event.getLocation().getWorld();
         if (world != null && !blacklistedWorlds.contains(world.getName())) {
             worldSpawnCounts.merge(world, 1, Integer::sum);
+            
+            // Update chunk mob count if it's a monster
+            if (event.getEntity() instanceof org.bukkit.entity.Monster) {
+                org.bukkit.Chunk chunk = event.getLocation().getChunk();
+                if (chunk.isLoaded()) {
+                    updateChunkMobCount(chunk);
+                }
+            }
         }
     }
     
@@ -865,16 +992,33 @@ public class TPSBasedMobSpawner extends JavaPlugin implements Listener {
     public void onEntityDeath(org.bukkit.event.entity.EntityDeathEvent event) {
         // Remove dead mobs from tracking
         pluginSpawnedMobs.remove(event.getEntity());
+        
+        // Update chunk mob count if it was a monster
+        if (event.getEntity() instanceof org.bukkit.entity.Monster) {
+            org.bukkit.Chunk chunk = event.getEntity().getChunk();
+            if (chunk.isLoaded()) {
+                updateChunkMobCount(chunk);
+            }
+        }
     }
     
     @EventHandler
     public void onChunkUnload(org.bukkit.event.world.ChunkUnloadEvent event) {
         // Remove mobs from tracking when chunks unload
-        for (org.bukkit.entity.Entity entity : event.getChunk().getEntities()) {
+        org.bukkit.Chunk chunk = event.getChunk();
+        for (org.bukkit.entity.Entity entity : chunk.getEntities()) {
             if (entity instanceof LivingEntity) {
                 pluginSpawnedMobs.remove(entity);
             }
         }
+        // Remove chunk from mob count tracking
+        chunkMobCounts.remove(chunk);
+    }
+    
+    @EventHandler
+    public void onChunkLoad(org.bukkit.event.world.ChunkLoadEvent event) {
+        // Update mob count when chunks load
+        updateChunkMobCount(event.getChunk());
     }
     
     @EventHandler
@@ -894,6 +1038,7 @@ public class TPSBasedMobSpawner extends JavaPlugin implements Listener {
         worldTPS.clear();
         pluginSpawnedMobs.clear();
         protectionCache.clear();
+        chunkMobCounts.clear();
         
         // Reset TPS tracking
         lastTPSUpdate = 0;
@@ -927,6 +1072,14 @@ public class TPSBasedMobSpawner extends JavaPlugin implements Listener {
         return (int) pluginSpawnedMobs.stream()
             .filter(entity -> entity.getWorld().equals(world))
             .count();
+    }
+    
+    public int getCachedMobCountInWorld(World world) {
+        return getCachedHostileMobCount(world);
+    }
+    
+    public void updateChunkMobCountPublic(org.bukkit.Chunk chunk) {
+        updateChunkMobCount(chunk);
     }
     
     public int getMobLevel(LivingEntity livingEntity) {
@@ -1015,28 +1168,44 @@ public class TPSBasedMobSpawner extends JavaPlugin implements Listener {
             sender.sendMessage("§6=== Spawn Statistics ===");
             sender.sendMessage("§7Plugin-spawned mobs total: §a" + plugin.getPluginSpawnedMobCount());
             sender.sendMessage("");
-            for (Map.Entry<World, Integer> entry : spawnCounts.entrySet()) {
-                World world = entry.getKey();
-                int totalMobs = plugin.getHostileMobCount(world);
-                int pluginMobs = plugin.getPluginSpawnedMobCountInWorld(world);
-                sender.sendMessage("§e" + world.getName() + "§7:");
-                sender.sendMessage("  §7- Total hostile mobs: §a" + totalMobs);
-                sender.sendMessage("  §7- Plugin-spawned: §a" + pluginMobs);
-            }
+                    for (Map.Entry<World, Integer> entry : spawnCounts.entrySet()) {
+            World world = entry.getKey();
+            int cachedMobs = plugin.getCachedMobCountInWorld(world);
+            int actualMobs = plugin.getHostileMobCount(world);
+            int pluginMobs = plugin.getPluginSpawnedMobCountInWorld(world);
+            sender.sendMessage("§e" + world.getName() + "§7:");
+            sender.sendMessage("  §7- Cached hostile mobs: §a" + cachedMobs);
+            sender.sendMessage("  §7- Actual hostile mobs: §a" + actualMobs);
+            sender.sendMessage("  §7- Plugin-spawned: §a" + pluginMobs);
+        }
         }
         
         private void spawnMobCommand(org.bukkit.command.CommandSender sender, String mobType) {
             if (!(sender instanceof Player)) {
                 sender.sendMessage("§cThis command can only be used by players!");
-                return true;
+                return;
             }
             
             Player player = (Player) sender;
+            
+            // Validate player and world
+            if (!player.isValid() || !player.getWorld().isChunkLoaded(player.getLocation().getBlockX() >> 4, player.getLocation().getBlockZ() >> 4)) {
+                sender.sendMessage("§cPlayer location is invalid or chunk is not loaded!");
+                return;
+            }
+            
             try {
                 EntityType type = EntityType.valueOf(mobType.toUpperCase());
                 if (plugin.getAllowedMobs().contains(type)) {
                     Location spawnLoc = player.getLocation();
                     LivingEntity mob = (LivingEntity) player.getWorld().spawnEntity(spawnLoc, type);
+                    
+                    // Update chunk mob count
+                    org.bukkit.Chunk chunk = spawnLoc.getChunk();
+                    if (chunk.isLoaded()) {
+                        plugin.updateChunkMobCountPublic(chunk);
+                    }
+                    
                     sender.sendMessage("§aSpawned " + mobType + " at your location!");
                 } else {
                     sender.sendMessage("§cMob type " + mobType + " is not in the allowed mobs list!");
@@ -1044,7 +1213,6 @@ public class TPSBasedMobSpawner extends JavaPlugin implements Listener {
             } catch (IllegalArgumentException e) {
                 sender.sendMessage("§cInvalid mob type: " + mobType);
             }
-            return true;
         }
         
         private void checkMobLevelCommand(org.bukkit.command.CommandSender sender, String entityId) {
