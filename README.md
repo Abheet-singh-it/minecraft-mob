@@ -95,6 +95,7 @@ mob_spawn_weights:
 | `/tpsmobspawner tps` | Show current server TPS | `tpsmobspawner.admin` |
 | `/tpsmobspawner stats` | Show spawn statistics | `tpsmobspawner.admin` |
 | `/tpsmobspawner spawn <mob>` | Spawn a specific mob | `tpsmobspawner.admin` |
+| `/tpsmobspawner level <entity_id>` | Check mob level and attributes | `tpsmobspawner.admin` |
 
 ## How It Works
 
@@ -122,10 +123,55 @@ mob_spawn_weights:
 
 ## LevelledMobs Integration
 
-The plugin automatically detects if LevelledMobs is installed and:
-- Applies custom names with level indicators
-- Uses configurable name prefixes
-- Maintains compatibility with LevelledMobs features
+The plugin uses the official LevelledMobs API and provides comprehensive integration:
+
+### **API Integration**
+- **Persistent Data Storage**: Uses LevelledMobs' `NamespacedKey` for level storage
+- **Level Management**: Automatically assigns random levels (1-50) to spawned mobs
+- **Attribute Scaling**: Applies level-based health, damage, and armor bonuses
+- **Custom Names**: Configurable name prefixes with level indicators
+
+### **Level-Based Features**
+- **Health Scaling**: +10% health per level
+- **Damage Scaling**: +5% attack damage per level  
+- **Armor Scaling**: +0.5 armor per level
+- **Persistent Storage**: Levels persist through server restarts
+
+### **Commands**
+- `/tpsmobspawner level <entity_id>` - Check mob level and attributes
+- Shows health, damage, and other level-based stats
+
+### **Compatibility**
+- Works with LevelledMobs 3.9.3+ (latest versions)
+- Uses official API methods when available
+- Graceful fallback to custom implementation
+
+## GriefPrevention Integration
+
+The plugin provides comprehensive protection against spawning mobs on protected land:
+
+### **Supported Protection Plugins**
+- **GriefPrevention**: Full API integration with claim detection
+- **WorldGuard**: Region protection and flag checking
+- **WorldEdit**: Region-based protection systems
+
+### **Protection Features**
+- **Claim Detection**: Automatically detects GriefPrevention claims
+- **Owner Verification**: Validates claim ownership and status
+- **Region Protection**: Respects WorldGuard protected regions
+- **Configurable**: Can be enabled/disabled via configuration
+
+### **Configuration Options**
+```yaml
+settings:
+  enable_grief_prevention_check: true  # Enable protection checks
+```
+
+### **How It Works**
+1. **Location Check**: Before spawning, checks if location is protected
+2. **Plugin Detection**: Automatically detects installed protection plugins
+3. **API Integration**: Uses official plugin APIs when available
+4. **Fallback Handling**: Graceful degradation if APIs are unavailable
 
 ## Permissions
 

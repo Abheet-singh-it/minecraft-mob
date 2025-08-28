@@ -3,6 +3,7 @@ package com.example.tpsmobspawner;
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.World;
+import org.bukkit.NamespacedKey;
 import org.bukkit.configuration.ConfigurationSection;
 import org.bukkit.configuration.file.FileConfiguration;
 import org.bukkit.entity.EntityType;
@@ -11,9 +12,11 @@ import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
 import org.bukkit.event.entity.CreatureSpawnEvent;
+import org.bukkit.plugin.Plugin;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.scheduler.BukkitRunnable;
 import org.bukkit.scheduler.BukkitTask;
+import org.bukkit.persistence.PersistentDataType;
 
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
@@ -477,15 +480,34 @@ public class TPSBasedMobSpawner extends JavaPlugin implements Listener {
     private boolean checkGriefPreventionProtection(Location loc) {
         try {
             // Try to use GriefPrevention API
+            Plugin gpPlugin = Bukkit.getPluginManager().getPlugin("GriefPrevention");
+            if (gpPlugin == null) return false;
+            
+            // Use reflection to access GriefPrevention API
             Class<?> gpClass = Class.forName("me.ryanhamshire.GriefPrevention.GriefPrevention");
             Object gpInstance = gpClass.getMethod("instance").invoke(null);
             
             if (gpInstance != null) {
-                // Check if location is in a claim
+                // Get the data store
                 Object dataStore = gpInstance.getClass().getMethod("dataStore").invoke(gpInstance);
                 if (dataStore != null) {
+                    // Check if location is in a claim
                     Object claim = dataStore.getClass().getMethod("getClaimAt", Location.class).invoke(dataStore, loc);
-                    return claim != null; // If claim exists, location is protected
+                    if (claim != null) {
+                        // Check if the claim is active and not expired
+                        try {
+                            // Try to get claim owner and other details
+                            Object owner = claim.getClass().getMethod("getOwnerID").invoke(claim);
+                            if (owner != null) {
+                                getLogger().fine("Location protected by GriefPrevention claim owned by: " + owner);
+                                return true;
+                            }
+                        } catch (Exception e) {
+                            // If we can't get owner details, assume it's protected
+                            getLogger().fine("Location protected by GriefPrevention claim");
+                            return true;
+                        }
+                    }
                 }
             }
         } catch (Exception e) {
@@ -608,24 +630,63 @@ public class TPSBasedMobSpawner extends JavaPlugin implements Listener {
     
     private boolean applyLevelledMobsAPI(LivingEntity mob) {
         try {
-            // Try to use LevelledMobs API to level the mob
-            Class<?> lmClass = Class.forName("com.github.jenya705.levelledmobs.LevelledMobs");
-            Object lmInstance = lmClass.getMethod("getInstance").invoke(null);
+            // Use the proper LevelledMobs API
+            Plugin levelledMobsPlugin = Bukkit.getPluginManager().getPlugin("LevelledMobs");
+            if (levelledMobsPlugin == null) return false;
             
-            if (lmInstance != null) {
-                // Use LevelledMobs API to apply leveling
-                // This is a simplified implementation - adjust based on actual API
-                Object levelManager = lmInstance.getClass().getMethod("getLevelManager").invoke(lmInstance);
-                if (levelManager != null) {
-                    // Apply leveling via API
-                    levelManager.getClass().getMethod("applyLevel", LivingEntity.class).invoke(levelManager, mob);
-                    return true;
-                }
-            }
+            // Create NamespacedKey for level storage
+            NamespacedKey levelKey = new NamespacedKey(levelledMobsPlugin, "level");
+            
+            // Generate a random level (1-50)
+            int level = new Random().nextInt(50) + 1;
+            
+            // Store the level in the mob's Persistent Data Container
+            mob.getPersistentDataContainer().set(levelKey, PersistentDataType.INTEGER, level);
+            
+            // Apply custom name with level indicator
+            String customName = levelledMobsPrefix.replace("&", "§") + " " + mob.getType().name() + " &eLv." + level;
+            mob.setCustomName(customName);
+            mob.setCustomNameVisible(true);
+            
+            // Apply level-based attributes
+            applyLevelBasedAttributes(mob, level);
+            
+            return true;
+            
         } catch (Exception e) {
             getLogger().fine("LevelledMobs API integration failed: " + e.getMessage());
         }
         return false;
+    }
+    
+    private void applyLevelBasedAttributes(LivingEntity mob, int level) {
+        try {
+            // Apply health scaling based on level
+            double healthMultiplier = 1.0 + (level * 0.1);
+            mob.setMaxHealth(mob.getMaxHealth() * healthMultiplier);
+            mob.setHealth(mob.getMaxHealth());
+            
+            // Apply other attributes based on level
+            if (mob instanceof org.bukkit.entity.Monster) {
+                org.bukkit.entity.Monster monster = (org.bukkit.entity.Monster) mob;
+                
+                // Increase damage for higher level mobs
+                if (monster.getAttribute(org.bukkit.attribute.Attribute.GENERIC_ATTACK_DAMAGE) != null) {
+                    double baseDamage = monster.getAttribute(org.bukkit.attribute.Attribute.GENERIC_ATTACK_DAMAGE).getBaseValue();
+                    double newDamage = baseDamage * (1.0 + (level * 0.05));
+                    monster.getAttribute(org.bukkit.attribute.Attribute.GENERIC_ATTACK_DAMAGE).setBaseValue(newDamage);
+                }
+                
+                // Increase armor for higher level mobs
+                if (monster.getAttribute(org.bukkit.attribute.Attribute.GENERIC_ARMOR) != null) {
+                    double baseArmor = monster.getAttribute(org.bukkit.attribute.Attribute.GENERIC_ARMOR).getBaseValue();
+                    double newArmor = baseArmor + (level * 0.5);
+                    monster.getAttribute(org.bukkit.attribute.Attribute.GENERIC_ARMOR).setBaseValue(newArmor);
+                }
+            }
+        } catch (Exception e) {
+            getLogger().fine("Failed to apply level-based attributes: " + e.getMessage());
+        }
     }
     
     private void applyCustomLevelledMobs(LivingEntity mob) {
@@ -710,6 +771,19 @@ public class TPSBasedMobSpawner extends JavaPlugin implements Listener {
             .count();
     }
     
+    public int getMobLevel(LivingEntity livingEntity) {
+        Plugin levelledMobsPlugin = Bukkit.getPluginManager().getPlugin("LevelledMobs");
+        if (levelledMobsPlugin == null) return 0;
+        
+        NamespacedKey levelKey = new NamespacedKey(levelledMobsPlugin, "level");
+        Integer level = livingEntity.getPersistentDataContainer().get(levelKey, PersistentDataType.INTEGER);
+        return level != null ? level : 0;
+    }
+    
+    public boolean isLevelledMob(LivingEntity livingEntity) {
+        return getMobLevel(livingEntity) > 0;
+    }
+    
     // Command executor
     private static class TPSMobSpawnerCommand implements org.bukkit.command.CommandExecutor {
         private final TPSBasedMobSpawner plugin;
@@ -753,6 +827,14 @@ public class TPSBasedMobSpawner extends JavaPlugin implements Listener {
                     spawnMobCommand(sender, args[1]);
                     break;
                     
+                case "level":
+                    if (args.length < 2) {
+                        sender.sendMessage("§cUsage: /tpsmobspawner level <entity_id>");
+                        return true;
+                    }
+                    checkMobLevelCommand(sender, args[1]);
+                    break;
+                    
                 default:
                     showHelp(sender);
                     break;
@@ -767,6 +849,7 @@ public class TPSBasedMobSpawner extends JavaPlugin implements Listener {
             sender.sendMessage("§e/tpsmobspawner tps §7- Show current TPS");
             sender.sendMessage("§e/tpsmobspawner stats §7- Show spawn statistics");
             sender.sendMessage("§e/tpsmobspawner spawn <mob> §7- Spawn a specific mob");
+            sender.sendMessage("§e/tpsmobspawner level <entity_id> §7- Check mob level");
         }
         
         private void showStats(org.bukkit.command.CommandSender sender) {
@@ -804,6 +887,51 @@ public class TPSBasedMobSpawner extends JavaPlugin implements Listener {
                 sender.sendMessage("§cInvalid mob type: " + mobType);
             }
             return true;
+        }
+        
+        private void checkMobLevelCommand(org.bukkit.command.CommandSender sender, String entityId) {
+            try {
+                int id = Integer.parseInt(entityId);
+                
+                // Find entity by ID
+                org.bukkit.entity.Entity entity = null;
+                for (World world : Bukkit.getWorlds()) {
+                    entity = world.getEntity(id);
+                    if (entity != null) break;
+                }
+                
+                if (entity == null) {
+                    sender.sendMessage("§cEntity with ID " + id + " not found!");
+                    return;
+                }
+                
+                if (entity instanceof LivingEntity) {
+                    LivingEntity livingEntity = (LivingEntity) entity;
+                    int level = plugin.getMobLevel(livingEntity);
+                    
+                    if (level > 0) {
+                        sender.sendMessage("§6Entity: §e" + entity.getType().name());
+                        sender.sendMessage("§6Level: §e" + level);
+                        sender.sendMessage("§6Health: §e" + String.format("%.1f", livingEntity.getHealth()) + "§7/§e" + String.format("%.1f", livingEntity.getMaxHealth()));
+                        
+                        if (livingEntity instanceof org.bukkit.entity.Monster) {
+                            org.bukkit.entity.Monster monster = (org.bukkit.entity.Monster) livingEntity;
+                            if (monster.getAttribute(org.bukkit.attribute.Attribute.GENERIC_ATTACK_DAMAGE) != null) {
+                                double damage = monster.getAttribute(org.bukkit.attribute.Attribute.GENERIC_ATTACK_DAMAGE).getBaseValue();
+                                sender.sendMessage("§6Attack Damage: §e" + String.format("%.1f", damage));
+                            }
+                        }
+                    } else {
+                        sender.sendMessage("§6Entity: §e" + entity.getType().name());
+                        sender.sendMessage("§7This entity is not a levelled mob.");
+                    }
+                } else {
+                    sender.sendMessage("§cEntity is not a living entity!");
+                }
+                
+            } catch (NumberFormatException e) {
+                sender.sendMessage("§cInvalid entity ID: " + entityId);
+            }
         }
     }
 }

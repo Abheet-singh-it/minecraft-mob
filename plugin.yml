@@ -9,7 +9,7 @@ website: https://github.com/yourusername/TPSBasedMobSpawner
 commands:
   tpsmobspawner:
     description: Main command for TPSBasedMobSpawner plugin
-    usage: /<command> [reload|tps|stats|spawn <mobtype>]
+    usage: /<command> [reload|tps|stats|spawn <mobtype>|level <entity_id>]
     permission: tpsmobspawner.admin
 
 permissions:
