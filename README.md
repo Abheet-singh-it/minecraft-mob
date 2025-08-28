@@ -15,6 +15,9 @@ A comprehensive Minecraft plugin that dynamically increases mob spawning around 
 - **Grief Prevention Protection**: Respects protected land claims and regions
 - **Mob Damage Control**: Ensures mobs can damage and target players
 - **Admin Commands**: Built-in commands for monitoring and control
+- **Memory Management**: Automatic cleanup of dead mobs and invalid data
+- **Configuration Validation**: Automatic validation and correction of invalid settings
+- **Efficient Algorithms**: Optimized spawn location finding and distance calculations
 
 ## Installation
 

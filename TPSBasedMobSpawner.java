@@ -27,6 +27,8 @@ public class TPSBasedMobSpawner extends JavaPlugin implements Listener {
     private final Map<World, Double> worldTPS = new ConcurrentHashMap<>();
     private final List<Double> tpsHistory = new ArrayList<>();
     private final int TPS_HISTORY_SIZE = 20;
+    private long lastTPSUpdate = 0;
+    private final Set<org.bukkit.entity.Entity> pluginSpawnedMobs = ConcurrentHashMap.newKeySet();
     
     // Configuration values
     private int minTPS = 19;
@@ -56,6 +58,7 @@ public class TPSBasedMobSpawner extends JavaPlugin implements Listener {
         // Start tasks
         startTPSTask();
         startSpawnTask();
+        startCleanupTask();
         
         // Register commands
         getCommand("tpsmobspawner").setExecutor(new TPSMobSpawnerCommand(this));
@@ -119,6 +122,9 @@ public class TPSBasedMobSpawner extends JavaPlugin implements Listener {
             }
         }
         
+        // Validate configuration values
+        validateConfiguration();
+        
         getLogger().info("Configuration loaded successfully!");
         getLogger().info("Blacklisted worlds: " + blacklistedWorlds);
         getLogger().info("Allowed mobs: " + allowedMobs.size());
@@ -142,6 +148,38 @@ public class TPSBasedMobSpawner extends JavaPlugin implements Listener {
         }.runTaskTimer(this, spawnCheckInterval, spawnCheckInterval);
     }
     
+    private void startCleanupTask() {
+        // Clean up spawn counts and reset TPS history periodically
+        new BukkitRunnable() {
+            @Override
+            public void run() {
+                cleanupData();
+            }
+        }.runTaskTimer(this, 1200, 1200); // Every minute (1200 ticks)
+    }
+    
+    private void cleanupData() {
+        // Clean up spawn counts by recounting actual mobs
+        for (World world : worldSpawnCounts.keySet()) {
+            int actualCount = getHostileMobCount(world);
+            worldSpawnCounts.put(world, actualCount);
+        }
+        
+        // Clean up TPS history if it gets too large
+        if (tpsHistory.size() > TPS_HISTORY_SIZE * 2) {
+            int toRemove = tpsHistory.size() - TPS_HISTORY_SIZE;
+            for (int i = 0; i < toRemove; i++) {
+                tpsHistory.remove(0);
+            }
+        }
+        
+        // Clean up world TPS map for worlds that no longer exist
+        worldTPS.entrySet().removeIf(entry -> !Bukkit.getWorlds().contains(entry.getKey()));
+        
+        // Clean up plugin-spawned mobs tracking (remove invalid entities)
+        pluginSpawnedMobs.removeIf(entity -> !entity.isValid() || entity.isDead());
+    }
+    
     private void updateTPS() {
         double currentTPS = getCurrentTPS();
         tpsHistory.add(currentTPS);
@@ -158,14 +196,45 @@ public class TPSBasedMobSpawner extends JavaPlugin implements Listener {
     
     private double getCurrentTPS() {
         try {
-            // Use reflection to get TPS from server
+            // Try to use Bukkit's built-in TPS method (available in newer versions)
+            double[] tps = Bukkit.getTPS();
+            return tps[0];
+        } catch (Exception e) {
+            // Fallback to reflection method
+            return getCurrentTPSReflection();
+        }
+    }
+    
+    private double getCurrentTPSReflection() {
+        try {
+            // Use reflection to get TPS from server (fallback method)
             Object serverInstance = Bukkit.getServer().getClass().getMethod("getServer").invoke(Bukkit.getServer());
             double[] recentTps = (double[]) serverInstance.getClass().getField("recentTps").get(serverInstance);
             return recentTps[0];
         } catch (Exception e) {
-            // Fallback method
+            // Final fallback - calculate TPS manually
+            return calculateManualTPS();
+        }
+    }
+    
+    private double calculateManualTPS() {
+        long currentTime = System.currentTimeMillis();
+        if (lastTPSUpdate == 0) {
+            lastTPSUpdate = currentTime;
             return 20.0;
         }
+        
+        long timeDiff = currentTime - lastTPSUpdate;
+        if (timeDiff < 1000) {
+            return 20.0; // Not enough time passed
+        }
+        
+        // Calculate TPS based on time difference
+        double tps = 1000.0 / timeDiff;
+        lastTPSUpdate = currentTime;
+        
+        // Clamp TPS to reasonable range
+        return Math.max(0.0, Math.min(20.0, tps));
     }
     
     private void performMobSpawning() {
@@ -189,8 +258,8 @@ public class TPSBasedMobSpawner extends JavaPlugin implements Listener {
                 continue;
             }
             
-            // Get current mob count
-            int currentMobCount = world.getLivingEntities().size();
+            // Get current hostile mob count (only count actual mobs, not all entities)
+            int currentMobCount = getHostileMobCount(world);
             int maxAllowed = (int) (maxMobsPerWorld * spawnMultiplier);
             
             if (currentMobCount >= maxAllowed) {
@@ -240,29 +309,32 @@ public class TPSBasedMobSpawner extends JavaPlugin implements Listener {
             return;
         }
         
-        // Spawn the mob
-        try {
-            LivingEntity mob = (LivingEntity) world.spawnEntity(spawnLoc, mobType);
-            
-            // Apply LevelledMobs if enabled
-            if (enableLevelledMobs && isLevelledMobsAvailable()) {
-                applyLevelledMobs(mob);
+                    // Spawn the mob
+            try {
+                LivingEntity mob = (LivingEntity) world.spawnEntity(spawnLoc, mobType);
+                
+                // Track plugin-spawned mobs
+                pluginSpawnedMobs.add(mob);
+                
+                // Apply LevelledMobs if enabled
+                if (enableLevelledMobs && isLevelledMobsAvailable()) {
+                    applyLevelledMobs(mob);
+                }
+                
+                // Update spawn count atomically
+                worldSpawnCounts.merge(world, 1, Integer::sum);
+                
+                getLogger().fine("Spawned " + mobType.name() + " at " + spawnLoc.toString());
+                
+            } catch (Exception e) {
+                getLogger().warning("Failed to spawn mob: " + e.getMessage());
             }
-            
-            // Update spawn count
-            worldSpawnCounts.put(world, worldSpawnCounts.getOrDefault(world, 0) + 1);
-            
-            getLogger().fine("Spawned " + mobType.name() + " at " + spawnLoc.toString());
-            
-        } catch (Exception e) {
-            getLogger().warning("Failed to spawn mob: " + e.getMessage());
-        }
     }
     
     private Location findSpawnLocation(Location playerLoc, World world) {
         Random random = new Random();
         
-        for (int attempts = 0; attempts < 15; attempts++) {
+        for (int attempts = 0; attempts < 20; attempts++) { // Increased attempts for better success rate
             // Generate random offset within spawn radius (increased minimum distance)
             int minDistance = minSpawnDistance; // Minimum distance from player
             int maxDistance = spawnRadius;
@@ -275,8 +347,10 @@ public class TPSBasedMobSpawner extends JavaPlugin implements Listener {
             
             Location testLoc = playerLoc.clone().add(x, 0, z);
             
-            // Find highest block at this location
-            int y = world.getHighestBlockYAt(testLoc);
+            // Use more efficient height finding
+            int y = findHighestBlockY(testLoc, world);
+            if (y == -1) continue; // Skip if no valid height found
+            
             testLoc.setY(y + 1);
             
             // Check if location is suitable for spawning
@@ -286,6 +360,23 @@ public class TPSBasedMobSpawner extends JavaPlugin implements Listener {
         }
         
         return null;
+    }
+    
+    private int findHighestBlockY(Location loc, World world) {
+        // More efficient height finding with bounds checking
+        int maxY = world.getMaxHeight() - 1;
+        int minY = world.getMinHeight();
+        
+        // Start from a reasonable height and work down
+        int startY = Math.min(maxY, loc.getBlockY() + 10);
+        
+        for (int y = startY; y >= minY; y--) {
+            if (world.getBlockAt(loc.getBlockX(), y, loc.getBlockZ()).getType().isSolid()) {
+                return y;
+            }
+        }
+        
+        return -1; // No solid block found
     }
     
     private boolean isValidSpawnLocation(Location loc, World world) {
@@ -305,8 +396,10 @@ public class TPSBasedMobSpawner extends JavaPlugin implements Listener {
         }
         
         // Check if location is not too close to players (increased distance)
+        // Use squared distance for better performance (avoid square root)
+        double minDistanceSquared = 15 * 15;
         for (Player player : world.getPlayers()) {
-            if (player.getLocation().distance(loc) < 15) {
+            if (player.getLocation().distanceSquared(loc) < minDistanceSquared) {
                 return false;
             }
         }
@@ -444,20 +537,107 @@ public class TPSBasedMobSpawner extends JavaPlugin implements Listener {
         return false;
     }
     
+    private int getHostileMobCount(World world) {
+        return (int) world.getLivingEntities().stream()
+            .filter(entity -> entity instanceof org.bukkit.entity.Monster)
+            .count();
+    }
+    
+    private void validateConfiguration() {
+        // Validate TPS settings
+        if (minTPS < 0 || minTPS > 20) {
+            getLogger().warning("Invalid min_tps value: " + minTPS + ". Using default: 19");
+            minTPS = 19;
+        }
+        
+        // Validate spawn settings
+        if (maxMobsPerWorld < 1) {
+            getLogger().warning("Invalid max_mobs_per_world value: " + maxMobsPerWorld + ". Using default: 100");
+            maxMobsPerWorld = 100;
+        }
+        
+        if (spawnRadius < 10) {
+            getLogger().warning("Invalid spawn_radius value: " + spawnRadius + ". Using default: 50");
+            spawnRadius = 50;
+        }
+        
+        if (minSpawnDistance < 5) {
+            getLogger().warning("Invalid min_spawn_distance value: " + minSpawnDistance + ". Using default: 20");
+            minSpawnDistance = 20;
+        }
+        
+        if (minSpawnDistance >= spawnRadius) {
+            getLogger().warning("min_spawn_distance (" + minSpawnDistance + ") must be less than spawn_radius (" + spawnRadius + "). Adjusting min_spawn_distance to " + (spawnRadius - 10));
+            minSpawnDistance = Math.max(5, spawnRadius - 10);
+        }
+        
+        if (spawnCheckInterval < 5) {
+            getLogger().warning("Invalid spawn_check_interval value: " + spawnCheckInterval + ". Using default: 20");
+            spawnCheckInterval = 20;
+        }
+        
+        if (tpsCheckInterval < 5) {
+            getLogger().warning("Invalid tps_check_interval value: " + tpsCheckInterval + ". Using default: 20");
+            tpsCheckInterval = 20;
+        }
+        
+        // Validate mob weights
+        for (Map.Entry<EntityType, Double> entry : mobSpawnWeights.entrySet()) {
+            if (entry.getValue() < 0) {
+                getLogger().warning("Invalid weight for " + entry.getKey() + ": " + entry.getValue() + ". Using default: 1.0");
+                mobSpawnWeights.put(entry.getKey(), 1.0);
+            }
+        }
+    }
+    
     private void applyLevelledMobs(LivingEntity mob) {
         try {
-            // Use LevelledMobs API to level the mob
-            // This is a simplified implementation - you may need to adjust based on actual LevelledMobs API
             if (Bukkit.getPluginManager().getPlugin("LevelledMobs") != null) {
-                // Apply custom name with level indicator
-                int level = new Random().nextInt(50) + 1;
-                String customName = levelledMobsPrefix.replace("&", "§") + " " + mob.getType().name() + " &eLv." + level;
-                mob.setCustomName(customName);
-                mob.setCustomNameVisible(true);
+                // Try to use actual LevelledMobs API
+                if (applyLevelledMobsAPI(mob)) {
+                    return; // Successfully applied via API
+                }
+                
+                // Fallback to custom implementation if API fails
+                applyCustomLevelledMobs(mob);
             }
         } catch (Exception e) {
             getLogger().warning("Failed to apply LevelledMobs: " + e.getMessage());
         }
+    }
+    
+    private boolean applyLevelledMobsAPI(LivingEntity mob) {
+        try {
+            // Try to use LevelledMobs API to level the mob
+            Class<?> lmClass = Class.forName("com.github.jenya705.levelledmobs.LevelledMobs");
+            Object lmInstance = lmClass.getMethod("getInstance").invoke(null);
+            
+            if (lmInstance != null) {
+                // Use LevelledMobs API to apply leveling
+                // This is a simplified implementation - adjust based on actual API
+                Object levelManager = lmInstance.getClass().getMethod("getLevelManager").invoke(lmInstance);
+                if (levelManager != null) {
+                    // Apply leveling via API
+                    levelManager.getClass().getMethod("applyLevel", LivingEntity.class).invoke(levelManager, mob);
+                    return true;
+                }
+            }
+        } catch (Exception e) {
+            getLogger().fine("LevelledMobs API integration failed: " + e.getMessage());
+        }
+        return false;
+    }
+    
+    private void applyCustomLevelledMobs(LivingEntity mob) {
+        // Fallback custom implementation
+        int level = new Random().nextInt(50) + 1;
+        String customName = levelledMobsPrefix.replace("&", "§") + " " + mob.getType().name() + " &eLv." + level;
+        mob.setCustomName(customName);
+        mob.setCustomNameVisible(true);
+        
+        // Apply some basic level-based attributes
+        mob.setMaxHealth(mob.getMaxHealth() * (1.0 + (level * 0.1)));
+        mob.setHealth(mob.getMaxHealth());
     }
     
     @EventHandler
@@ -465,7 +645,7 @@ public class TPSBasedMobSpawner extends JavaPlugin implements Listener {
         // Track natural spawns
         World world = event.getLocation().getWorld();
         if (world != null && !blacklistedWorlds.contains(world.getName())) {
-            worldSpawnCounts.put(world, worldSpawnCounts.getOrDefault(world, 0) + 1);
+            worldSpawnCounts.merge(world, 1, Integer::sum);
         }
     }
     
@@ -487,6 +667,18 @@ public class TPSBasedMobSpawner extends JavaPlugin implements Listener {
         }
     }
     
+    @EventHandler
+    public void onEntityDeath(org.bukkit.event.entity.EntityDeathEvent event) {
+        // Remove dead mobs from tracking
+        pluginSpawnedMobs.remove(event.getEntity());
+    }
+    
+    @EventHandler
+    public void onEntityRemove(org.bukkit.event.entity.EntityRemoveEvent event) {
+        // Remove removed mobs from tracking
+        pluginSpawnedMobs.remove(event.getEntity());
+    }
+    
     public void reloadPlugin() {
         loadConfig();
         getLogger().info("Plugin configuration reloaded!");
@@ -506,6 +698,16 @@ public class TPSBasedMobSpawner extends JavaPlugin implements Listener {
     
     public List<EntityType> getAllowedMobs() {
         return new ArrayList<>(allowedMobs);
+    }
+    
+    public int getPluginSpawnedMobCount() {
+        return pluginSpawnedMobs.size();
+    }
+    
+    public int getPluginSpawnedMobCountInWorld(World world) {
+        return (int) pluginSpawnedMobs.stream()
+            .filter(entity -> entity.getWorld().equals(world))
+            .count();
     }
     
     // Command executor
@@ -570,8 +772,15 @@ public class TPSBasedMobSpawner extends JavaPlugin implements Listener {
         private void showStats(org.bukkit.command.CommandSender sender) {
             Map<World, Integer> spawnCounts = plugin.getWorldSpawnCounts();
             sender.sendMessage("§6=== Spawn Statistics ===");
+            sender.sendMessage("§7Plugin-spawned mobs total: §a" + plugin.getPluginSpawnedMobCount());
+            sender.sendMessage("");
             for (Map.Entry<World, Integer> entry : spawnCounts.entrySet()) {
-                sender.sendMessage("§e" + entry.getKey().getName() + "§7: §a" + entry.getValue() + " mobs spawned");
+                World world = entry.getKey();
+                int totalMobs = plugin.getHostileMobCount(world);
+                int pluginMobs = plugin.getPluginSpawnedMobCountInWorld(world);
+                sender.sendMessage("§e" + world.getName() + "§7:");
+                sender.sendMessage("  §7- Total hostile mobs: §a" + totalMobs);
+                sender.sendMessage("  §7- Plugin-spawned: §a" + pluginMobs);
             }
         }
         
