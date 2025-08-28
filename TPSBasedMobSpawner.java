@@ -32,6 +32,7 @@ public class TPSBasedMobSpawner extends JavaPlugin implements Listener {
     private final int TPS_HISTORY_SIZE = 20;
     private long lastTPSUpdate = 0;
     private final Set<org.bukkit.entity.Entity> pluginSpawnedMobs = ConcurrentHashMap.newKeySet();
+    private final Map<Location, Boolean> protectionCache = new ConcurrentHashMap<>();
     
     // Configuration values
     private int minTPS = 19;
@@ -173,6 +174,7 @@ public class TPSBasedMobSpawner extends JavaPlugin implements Listener {
         synchronized (worldSpawnCounts) {
             for (World world : new HashSet<>(worldSpawnCounts.keySet())) {
                 if (world != null && Bukkit.getWorlds().contains(world)) {
+                    // Get count inside synchronized block to prevent race conditions
                     int actualCount = getHostileMobCount(world);
                     worldSpawnCounts.put(world, actualCount);
                 } else {
@@ -194,6 +196,12 @@ public class TPSBasedMobSpawner extends JavaPlugin implements Listener {
         
         // Clean up world TPS map for worlds that no longer exist
         worldTPS.entrySet().removeIf(entry -> !Bukkit.getWorlds().contains(entry.getKey()));
+        
+        // Clean up protection cache to prevent memory leaks
+        if (protectionCache.size() > 1000) {
+            protectionCache.clear();
+            getLogger().fine("Cleared protection cache to prevent memory leaks");
+        }
     }
     
     private void updateTPS() {
@@ -241,16 +249,12 @@ public class TPSBasedMobSpawner extends JavaPlugin implements Listener {
         }
         
         long timeDiff = currentTime - lastTPSUpdate;
-        if (timeDiff < 1000) {
-            return 20.0; // Not enough time passed
-        }
-        
-        // Calculate TPS based on expected 50ms per tick at 20 TPS
-        double expectedTickTime = 50.0; // milliseconds per tick at 20 TPS
-        double actualTPS = (1000.0 / expectedTickTime) * (expectedTickTime / (timeDiff / 20.0));
         lastTPSUpdate = currentTime;
         
-        // Clamp TPS to reasonable range
+        if (timeDiff < 50) return 20.0; // Less than one tick
+        
+        // Calculate actual TPS based on time for 20 ticks
+        double actualTPS = 20000.0 / timeDiff;
         return Math.max(0.0, Math.min(20.0, actualTPS));
     }
     
@@ -449,25 +453,23 @@ public class TPSBasedMobSpawner extends JavaPlugin implements Listener {
     }
     
     private boolean isInsidePlayerBase(Location loc, World world) {
-        // Check for signs of player bases (chests, furnaces, beds, etc.)
-        int radius = 5; // Check 5 block radius for base structures
+        // Much smaller check radius for better performance
+        int radius = 2;
         
         for (int x = -radius; x <= radius; x++) {
-            for (int y = -3; y <= 3; y++) {
-                for (int z = -radius; z <= radius; z++) {
-                    Location checkLoc = loc.clone().add(x, y, z);
-                    if (checkLoc.getBlockY() < world.getMinHeight() || checkLoc.getBlockY() >= world.getMaxHeight()) {
-                        continue;
-                    }
-                    
-                    org.bukkit.block.Block block = checkLoc.getBlock();
-                    org.bukkit.Material type = block.getType();
-                    
-                    // Check for base-related blocks
-                    if (isBaseBlock(type)) {
-                        getLogger().fine("Prevented spawn near base structure: " + type.name() + " at " + checkLoc);
-                        return true;
-                    }
+            for (int z = -radius; z <= radius; z++) {
+                Location checkLoc = loc.clone().add(x, 0, z);
+                if (checkLoc.getBlockY() < world.getMinHeight() || checkLoc.getBlockY() >= world.getMaxHeight()) {
+                    continue;
+                }
+                
+                org.bukkit.block.Block block = checkLoc.getBlock();
+                org.bukkit.Material type = block.getType();
+                
+                // Check for base-related blocks
+                if (isBaseBlock(type)) {
+                    getLogger().fine("Prevented spawn near base structure: " + type.name() + " at " + checkLoc);
+                    return true;
                 }
             }
         }
@@ -485,23 +487,7 @@ public class TPSBasedMobSpawner extends JavaPlugin implements Listener {
                material == org.bukkit.Material.CRAFTING_TABLE ||
                material == org.bukkit.Material.ANVIL ||
                material == org.bukkit.Material.ENCHANTING_TABLE ||
-               material == org.bukkit.Material.BED ||
-               material == org.bukkit.Material.WHITE_BED ||
-               material == org.bukkit.Material.ORANGE_BED ||
-               material == org.bukkit.Material.MAGENTA_BED ||
-               material == org.bukkit.Material.LIGHT_BLUE_BED ||
-               material == org.bukkit.Material.YELLOW_BED ||
-               material == org.bukkit.Material.LIME_BED ||
-               material == org.bukkit.Material.PINK_BED ||
-               material == org.bukkit.Material.GRAY_BED ||
-               material == org.bukkit.Material.LIGHT_GRAY_BED ||
-               material == org.bukkit.Material.CYAN_BED ||
-               material == org.bukkit.Material.PURPLE_BED ||
-               material == org.bukkit.Material.BLUE_BED ||
-               material == org.bukkit.Material.BROWN_BED ||
-               material == org.bukkit.Material.GREEN_BED ||
-               material == org.bukkit.Material.RED_BED ||
-               material == org.bukkit.Material.BLACK_BED ||
+               material.name().endsWith("_BED") || // Handles all bed types dynamically
                material == org.bukkit.Material.DOOR ||
                material == org.bukkit.Material.IRON_DOOR ||
                material == org.bukkit.Material.TORCH ||
@@ -551,6 +537,12 @@ public class TPSBasedMobSpawner extends JavaPlugin implements Listener {
     }
     
     private boolean isGriefPreventionProtected(Location loc) {
+        // Use cache key based on block coordinates to avoid expensive checks
+        Location key = new Location(loc.getWorld(), loc.getBlockX(), loc.getBlockY(), loc.getBlockZ());
+        return protectionCache.computeIfAbsent(key, this::checkGriefPreventionUncached);
+    }
+    
+    private boolean checkGriefPreventionUncached(Location loc) {
         try {
             // Check if GriefPrevention is available
             if (Bukkit.getPluginManager().getPlugin("GriefPrevention") != null) {
@@ -876,12 +868,6 @@ public class TPSBasedMobSpawner extends JavaPlugin implements Listener {
     }
     
     @EventHandler
-    public void onEntityDeath(org.bukkit.event.entity.EntityDeathEvent event) {
-        // Remove dead mobs from tracking
-        pluginSpawnedMobs.remove(event.getEntity());
-    }
-    
-    @EventHandler
     public void onChunkUnload(org.bukkit.event.world.ChunkUnloadEvent event) {
         // Remove mobs from tracking when chunks unload
         for (org.bukkit.entity.Entity entity : event.getChunk().getEntities()) {
@@ -907,6 +893,7 @@ public class TPSBasedMobSpawner extends JavaPlugin implements Listener {
         }
         worldTPS.clear();
         pluginSpawnedMobs.clear();
+        protectionCache.clear();
         
         // Reset TPS tracking
         lastTPSUpdate = 0;

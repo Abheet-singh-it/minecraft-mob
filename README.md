@@ -226,6 +226,9 @@ The plugin logs important information including:
 - **Efficient memory management** using concurrent collections
 - **Smart spawning** prevents server overload
 - **TPS protection** ensures server stability
+- **Optimized algorithms** with chunk-based proximity checks
+- **Protection caching** reduces expensive API calls
+- **Efficient base detection** with minimal block checking
 
 ## Compatibility
 
